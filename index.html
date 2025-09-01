@@ -50,6 +50,7 @@
                         document.getElementById('user-id').textContent = userId;
                         console.log('Firebase inicializado com sucesso.');
                         // Renderiza a UI inicial após a autenticação
+                        setupListeners();
                         renderUI();
                     } else {
                         console.log('Usuário deslogado.');
@@ -140,7 +141,7 @@
                 renderUI();
             });
         }
-        
+
         // Adiciona evento de clique para o botão "Adicionar Serviço"
         document.getElementById('add-service-btn').addEventListener('click', () => {
             toggleModal('add-service-modal', true);
