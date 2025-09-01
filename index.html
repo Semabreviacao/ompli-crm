@@ -14,8 +14,8 @@
 
         // Variáveis globais para configuração do Firebase
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config !== 'null' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' && __initial_auth_token !== 'null' ? __initial_auth_token : null;
 
         // Variáveis para o sistema
         let app, db, auth, userId;
@@ -449,4 +449,3 @@
             </div>
         </body>
         </html>
-
