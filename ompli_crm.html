@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OMPLI CRM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Importações do Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, onSnapshot, doc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+
+        // Variáveis globais para configuração do Firebase
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Variáveis para o sistema
+        let app, db, auth, userId;
+        const state = {
+            services: [],
+            clients: [],
+            showAddServiceModal: false,
+            showDeleteConfirmModal: false,
+            serviceToDelete: null
+        };
+
+        setLogLevel('debug'); // Ativa o log de depuração
+
+        // Funções de inicialização e autenticação
+        async function initializeFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Otimiza o processo de login
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // Configura o ouvinte de estado de autenticação
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id').textContent = userId;
+                        console.log('Firebase inicializado com sucesso.');
+                        // Renderiza a UI inicial após a autenticação
+                        renderUI();
+                    } else {
+                        console.log('Usuário deslogado.');
+                        // Limpa a UI se o usuário sair
+                        renderUI();
+                    }
+                });
+            } catch (error) {
+                console.error("Erro ao inicializar o Firebase:", error);
+                document.getElementById('user-id').textContent = 'Erro de conexão.';
+            }
+        }
+
+        // Funções para manipulação do estado e da UI
+        function renderUI() {
+            renderDashboard();
+            renderServices();
+        }
+
+        function renderDashboard() {
+            const totalClients = state.clients.length;
+            const totalServices = state.services.length;
+            const activeServices = state.services.filter(s => s.status === 'Em Andamento').length;
+            const completedServices = state.services.filter(s => s.status === 'Concluído').length;
+
+            document.getElementById('total-clients').textContent = totalClients;
+            document.getElementById('total-services').textContent = totalServices;
+            document.getElementById('active-services').textContent = activeServices;
+            document.getElementById('completed-services').textContent = completedServices;
+        }
+
+        function renderServices() {
+            const serviceList = document.getElementById('service-list');
+            serviceList.innerHTML = ''; // Limpa a lista existente
+
+            const sortedServices = state.services.sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+
+            if (sortedServices.length === 0) {
+                serviceList.innerHTML = '<p class="text-gray-500 text-center py-4">Nenhum serviço encontrado.</p>';
+            }
+
+            sortedServices.forEach(service => {
+                const client = state.clients.find(c => c.id === service.clientId);
+                const clientName = client ? client.name : 'Cliente Desconhecido';
+                const statusColor = getStatusColor(service.status);
+
+                const row = document.createElement('tr');
+                row.className = 'border-b last:border-0 hover:bg-gray-50';
+                row.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${clientName}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${service.service}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm">
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}">${service.status}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${service.startDate}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button onclick="window.updateServiceStatus('${service.id}', 'Em Andamento')" class="text-indigo-600 hover:text-indigo-900 mr-2">Em Andamento</button>
+                        <button onclick="window.updateServiceStatus('${service.id}', 'Concluído')" class="text-green-600 hover:text-green-900 mr-2">Concluído</button>
+                        <button onclick="window.showDeleteModal('${service.id}')" class="text-red-600 hover:text-red-900">Excluir</button>
+                    </td>
+                `;
+                serviceList.appendChild(row);
+            });
+        }
+
+        function getStatusColor(status) {
+            switch (status) {
+                case 'Em Andamento': return 'bg-yellow-100 text-yellow-800';
+                case 'Concluído': return 'bg-green-100 text-green-800';
+                case 'Pendente': return 'bg-blue-100 text-blue-800';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        // Funções para eventos e Firestore
+        function setupListeners() {
+            // Listener para a coleção de clientes
+            const clientsRef = collection(db, `/artifacts/${appId}/public/data/clients`);
+            onSnapshot(clientsRef, (snapshot) => {
+                state.clients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderUI();
+            });
+
+            // Listener para a coleção de serviços
+            const servicesRef = collection(db, `/artifacts/${appId}/public/data/services`);
+            onSnapshot(servicesRef, (snapshot) => {
+                state.services = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderUI();
+            });
+        }
+        
+        // Adiciona evento de clique para o botão "Adicionar Serviço"
+        document.getElementById('add-service-btn').addEventListener('click', () => {
+            toggleModal('add-service-modal', true);
+        });
+
+        // Adiciona evento de clique para o botão "Cancelar" do modal
+        document.getElementById('cancel-add-service').addEventListener('click', () => {
+            toggleModal('add-service-modal', false);
+        });
+
+        // Adiciona evento de clique para o botão "Cancelar" do modal de exclusão
+        document.getElementById('cancel-delete').addEventListener('click', () => {
+            toggleModal('delete-confirm-modal', false);
+        });
+
+        // Adiciona evento de clique para o botão "Confirmar Exclusão"
+        document.getElementById('confirm-delete').addEventListener('click', () => {
+            if (state.serviceToDelete) {
+                deleteService(state.serviceToDelete);
+                state.serviceToDelete = null;
+            }
+            toggleModal('delete-confirm-modal', false);
+        });
+
+        async function addService(event) {
+            event.preventDefault();
+            const form = event.target;
+            const clientName = form.elements['client-name'].value;
+            const clientPhone = form.elements['client-phone'].value;
+            const serviceDescription = form.elements['service-description'].value;
+            const startDate = new Date().toISOString().split('T')[0];
+            const status = 'Pendente';
+
+            try {
+                // Tenta encontrar um cliente existente, ou cria um novo
+                const clientRef = collection(db, `/artifacts/${appId}/public/data/clients`);
+                const clientSnapshot = await getDocs(clientRef);
+                const existingClient = clientSnapshot.docs.find(doc => doc.data().phone === clientPhone);
+                let clientId;
+
+                if (existingClient) {
+                    clientId = existingClient.id;
+                } else {
+                    const newClientRef = await addDoc(clientRef, { name: clientName, phone: clientPhone });
+                    clientId = newClientRef.id;
+                }
+
+                // Adiciona o novo serviço
+                const servicesRef = collection(db, `/artifacts/${appId}/public/data/services`);
+                await addDoc(servicesRef, {
+                    clientId: clientId,
+                    service: serviceDescription,
+                    status: status,
+                    startDate: startDate
+                });
+
+                form.reset();
+                toggleModal('add-service-modal', false);
+                console.log('Serviço adicionado com sucesso!');
+            } catch (e) {
+                console.error("Erro ao adicionar serviço: ", e);
+            }
+        }
+
+        async function updateServiceStatus(serviceId, newStatus) {
+            const serviceRef = doc(db, `/artifacts/${appId}/public/data/services`, serviceId);
+            try {
+                await updateDoc(serviceRef, {
+                    status: newStatus
+                });
+                console.log('Status do serviço atualizado!');
+            } catch (e) {
+                console.error("Erro ao atualizar o status: ", e);
+            }
+        }
+
+        async function deleteService(serviceId) {
+            const serviceRef = doc(db, `/artifacts/${appId}/public/data/services`, serviceId);
+            try {
+                await deleteDoc(serviceRef);
+                console.log('Serviço excluído!');
+            } catch (e) {
+                console.error("Erro ao excluir o serviço: ", e);
+            }
+        }
+
+        // Funções para controle dos modais
+        function toggleModal(modalId, show) {
+            const modal = document.getElementById(modalId);
+            if (show) {
+                modal.classList.remove('hidden');
+                setTimeout(() => modal.classList.add('opacity-100', 'scale-100'), 10);
+            } else {
+                modal.classList.remove('opacity-100', 'scale-100');
+                setTimeout(() => modal.classList.add('hidden'), 300);
+            }
+        }
+
+        function showDeleteModal(serviceId) {
+            state.serviceToDelete = serviceId;
+            toggleModal('delete-confirm-modal', true);
+        }
+
+        // Exposição de funções globais
+        window.addService = addService;
+        window.updateServiceStatus = updateServiceStatus;
+        window.showDeleteModal = showDeleteModal;
+
+        // Inicializa o aplicativo ao carregar a janela
+        window.onload = initializeFirebase;
+    </script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .no-scrollbar {
+            -ms-overflow-style: none; /* IE and Edge */
+            scrollbar-width: none; /* Firefox */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans antialiased text-gray-800">
+    <div class="flex h-screen overflow-hidden">
+        <!-- Sidebar -->
+        <div class="w-64 bg-gray-900 text-white p-6 flex flex-col items-center shadow-lg transform transition-transform duration-300 ease-in-out md:translate-x-0 -translate-x-full fixed md:relative z-40">
+            <div class="flex items-center space-x-2 mb-8">
+                <img src="https://placehold.co/100x100/1e293b/d1d5db?text=OMPLI" alt="OMPLI Logo" class="w-12 h-12 rounded-full border-2 border-gray-700">
+                <h1 class="text-2xl font-bold">OMPLI</h1>
+            </div>
+            <p class="text-sm text-gray-400 mb-6 text-center">ID do Usuário:<br><span id="user-id" class="text-xs break-all">Aguardando autenticação...</span></p>
+
+            <nav class="flex-1 w-full">
+                <a href="#" class="flex items-center space-x-2 p-3 text-gray-300 hover:bg-gray-700 rounded-md transition duration-200 mb-2">
+                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"></path></svg>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="flex items-center space-x-2 p-3 text-gray-300 hover:bg-gray-700 rounded-md transition duration-200 mb-2">
+                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.972 5.972 0 004 15v3H1v-3a3 3 0 013.75-2.906z"></path></svg>
+                    <span>Clientes</span>
+                </a>
+                <a href="#" class="flex items-center space-x-2 p-3 text-gray-300 hover:bg-gray-700 rounded-md transition duration-200 mb-2">
+                    <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"></path></svg>
+                    <span>Serviços</span>
+                </a>
+            </nav>
+            <div class="mt-auto w-full">
+                <button id="add-service-btn" class="w-full flex items-center justify-center space-x-2 p-3 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition duration-200 shadow-md">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd"></path></svg>
+                    <span>Adicionar Serviço</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col overflow-auto no-scrollbar">
+            <header class="bg-white p-6 flex justify-between items-center shadow-md z-30">
+                <h2 class="text-3xl font-bold">Painel de Controle</h2>
+            </header>
+
+            <main class="flex-1 p-6 overflow-y-auto no-scrollbar">
+                <!-- Cards de Resumo -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-white p-6 rounded-xl shadow-md flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-500 font-medium">Total de Clientes</p>
+                            <h3 id="total-clients" class="text-3xl font-bold text-gray-900 mt-1">0</h3>
+                        </div>
+                        <svg class="w-12 h-12 text-blue-500 opacity-20" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.972 5.972 0 004 15v3H1v-3a3 3 0 013.75-2.906z"></path></svg>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-md flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-500 font-medium">Total de Serviços</p>
+                            <h3 id="total-services" class="text-3xl font-bold text-gray-900 mt-1">0</h3>
+                        </div>
+                        <svg class="w-12 h-12 text-purple-500 opacity-20" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"></path></svg>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-md flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-500 font-medium">Serviços Ativos</p>
+                            <h3 id="active-services" class="text-3xl font-bold text-gray-900 mt-1">0</h3>
+                        </div>
+                        <svg class="w-12 h-12 text-yellow-500 opacity-20" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"></path></svg>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-md flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-500 font-medium">Serviços Concluídos</p>
+                            <h3 id="completed-services" class="text-3xl font-bold text-gray-900 mt-1">0</h3>
+                        </div>
+                        <svg class="w-12 h-12 text-green-500 opacity-20" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                    </div>
+                </div>
+
+                <!-- Tabela de Serviços -->
+                <div class="bg-white rounded-xl shadow-md p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-xl font-semibold text-gray-900">Serviços Recentes</h3>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Cliente
+                                    </th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Serviço
+                                    </th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Status
+                                    </th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Data de Início
+                                    </th>
+                                    <th scope="col" class="relative px-6 py-3">
+                                        <span class="sr-only">Ações</span>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="service-list" class="bg-white divide-y divide-gray-200">
+                                <!-- Conteúdo preenchido via JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Modal para Adicionar Serviço -->
+    <div id="add-service-modal" class="fixed inset-0 z-50 overflow-y-auto hidden">
+        <div class="flex items-center justify-center min-h-screen p-4 text-center transition-all transform opacity-0 scale-95 duration-300">
+            <div class="fixed inset-0 bg-gray-900 bg-opacity-75 transition-opacity"></div>
+            <div class="inline-block align-middle bg-white rounded-xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+                <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                    <div class="sm:flex sm:items-start">
+                        <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-indigo-100 sm:mx-0 sm:h-10 sm:w-10">
+                            <svg class="h-6 w-6 text-indigo-600" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"></path></svg>
+                        </div>
+                        <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
+                            <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">
+                                Adicionar Novo Serviço
+                            </h3>
+                            <div class="mt-2">
+                                <form onsubmit="window.addService(event)">
+                                    <div class="mb-4">
+                                        <label for="client-name" class="block text-sm font-medium text-gray-700">Nome do Cliente</label>
+                                        <input type="text" id="client-name" name="client-name" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border">
+                                    </div>
+                                    <div class="mb-4">
+                                        <label for="client-phone" class="block text-sm font-medium text-gray-700">Telefone do Cliente</label>
+                                        <input type="text" id="client-phone" name="client-phone" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border">
+                                    </div>
+                                    <div class="mb-4">
+                                        <label for="service-description" class="block text-sm font-medium text-gray-700">Descrição do Serviço</label>
+                                        <textarea id="service-description" name="service-description" required rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"></textarea>
+                                    </div>
+                                    <div class="flex justify-end mt-4">
+                                        <button type="button" id="cancel-add-service" class="mr-2 inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 sm:text-sm transition duration-200">
+                                            Cancelar
+                                        </button>
+                                        <button type="submit" class="inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-indigo-600 text-base font-medium text-white hover:bg-indigo-700 sm:text-sm transition duration-200">
+                                            Salvar Serviço
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal de Confirmação de Exclusão -->
+            <div id="delete-confirm-modal" class="fixed inset-0 z-50 overflow-y-auto hidden">
+                <div class="flex items-center justify-center min-h-screen p-4 text-center transition-all transform opacity-0 scale-95 duration-300">
+                    <div class="fixed inset-0 bg-gray-900 bg-opacity-75 transition-opacity"></div>
+                    <div class="inline-block align-middle bg-white rounded-xl text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+                        <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                            <div class="sm:flex sm:items-start">
+                                <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
+                                    <svg class="h-6 w-6 text-red-600" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                                </div>
+                                <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+                                    <h3 class="text-lg leading-6 font-medium text-gray-900">
+                                        Excluir Serviço
+                                    </h3>
+                                    <div class="mt-2">
+                                        <p class="text-sm text-gray-500">
+                                            Tem certeza de que deseja excluir este serviço? Esta ação não pode ser desfeita.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse rounded-b-xl">
+                            <button type="button" id="confirm-delete" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-red-600 text-base font-medium text-white hover:bg-red-700 sm:ml-3 sm:w-auto sm:text-sm transition duration-200">
+                                Confirmar
+                            </button>
+                            <button type="button" id="cancel-delete" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm transition duration-200">
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
